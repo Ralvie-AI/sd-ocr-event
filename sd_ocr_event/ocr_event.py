@@ -1,0 +1,355 @@
+import json
+import platform
+import os
+import time
+import re
+import logging
+import importlib.util
+import urllib3
+
+import numpy as np
+import cv2
+import pyopencl as cl
+import requests
+
+
+os.environ.pop('HTTP_PROXY', None)
+os.environ.pop('HTTPS_PROXY', None)
+
+
+logger = logging.getLogger(__name__)
+
+class ActiveWindowOCRText:
+    def __init__(self, server_url, screenshot_id, image_path, warmup=False) -> None:
+        super().__init__()
+        self._reader_cache = None
+        self.server_url = server_url
+        self.screenshot_id = screenshot_id
+        self.image_path = image_path
+
+        if warmup:
+            self._warmup()
+
+    def _warmup(self):
+        try:
+            reader = self.get_cached_reader()
+            warmup_img = np.ones((256, 256, 3), dtype=np.uint8) * 255
+            cv2.putText(warmup_img, "Warmup", (10, 150),cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 0, 0), 3)
+            _ = reader(warmup_img)
+            del warmup_img
+            #print("[OCRText] Warmup completed")
+        except Exception:
+            #logger.exception("[OCRText] Warmup failed")
+            raise
+            
+
+    def _get_gpu_names(self):
+        names = []
+        for platform in cl.get_platforms():
+            for device in platform.get_devices(device_type=cl.device_type.GPU):
+                if device.available:
+                    names.append(device.name.lower())
+        return names
+
+
+    def use_directml(self) -> bool:
+        """ Detect if system has GPU for DirectML acceleration. 
+        - NVIDIA GPUs are allowed. 
+        - Intel GPUs are not used for DirectML (prefer CPU). 
+        - AMD GPUs are allowed unless they match a deny-list of older/weak architectures."""
+
+        try:    
+            active_gpus = []  
+            try:
+                active_gpus = self._get_gpu_names()
+            except Exception:
+                pass
+
+            if not active_gpus:
+                logger.warning("[OCRText] No GPU name detected")
+                return False
+
+            logger.info(f"[OCRText] Detected active GPU: {active_gpus}")
+
+            def has_any(text: str, keywords: list[str]) -> bool:
+                return any(k in text for k in keywords)
+
+            def has_any_regex(text: str, patterns: list[str]) -> bool:
+                return any(re.search(p, text) for p in patterns)
+            
+            for gpu_name in active_gpus:
+                gpu_name = gpu_name.lower()
+
+                # NVIDIA (always allowed)
+                if has_any(gpu_name, ["nvidia", "geforce", "quadro", "rtx", "gtx"]):
+                    logger.info(f"[OCRText] Detected NVIDIA - DirectML")
+                    return True
+
+                # --- Intel GPUs ---
+                if has_any(gpu_name, ["intel arc", "arc a"]):
+                    logger.info("[OCRText] Intel Arc detected - DirectML")
+                    return True
+
+                if has_any(gpu_name, ["iris xe"]):
+                    logger.info("[OCRText] Intel Iris Xe detected")
+                    continue
+
+                if has_any(gpu_name, ["intel", "uhd", "hd graphics", "iris"]):
+                    logger.info("[OCRText] Intel iGPU detected")
+                    continue
+        
+                # AMD / ATI GPUs
+                if has_any(gpu_name, ["amd", "radeon", "ati"]):
+                    logger.info(f"[OCRText] Detected AMD")
+
+                    # DENY: Vega integrated graphics (APUs) # Catches "vega 8", "vega8", "vega 8 mobile", etc.
+                    vega_integrated_ids = ["3", "6", "7", "8", "10", "11"]
+                    for vid in vega_integrated_ids:
+                        if re.search(rf"vega\s*{vid}\b", gpu_name):
+                            logger.info(f"[OCRText] DENY: Vega integrated graphics (APUs)")
+                            continue
+
+                    # DENY: Vega 10 discrete (RX Vega 56/64/Frontier) # But allow Radeon VII (Vega 20).
+                    if "radeon vii" not in gpu_name:
+                        if (re.search(r"vega\s*56\b", gpu_name) or
+                            re.search(r"vega\s*64\b", gpu_name) or
+                            "vega frontier" in gpu_name):
+                            logger.info(f"[OCRText] DENY: Vega 10 discrete")
+                            continue
+
+                    # DENY: any remaining "vega" that isn't Radeon VII
+                    if "vega" in gpu_name and "radeon vii" not in gpu_name:
+                        logger.info(f"[OCRText] DENY: vega that isn't Radeon VII")
+                        continue
+
+                    # DENY: older discrete GCN generations # 3.1 RX 400/500 Polaris
+                    polaris_patterns = [
+                        r"rx\s*460\b", r"rx\s*470\b", r"rx\s*480\b",
+                        r"rx\s*550\b", r"rx\s*560\b", r"rx\s*570\b", r"rx\s*580\b", r"rx\s*590\b",
+                    ]
+                    if has_any_regex(gpu_name, polaris_patterns):
+                        logger.info(f"[OCRText] DENY: older discrete GCN")
+                        continue
+
+                    # 3.2 R9 / R7 / R5 
+                    r9_patterns = [r"r9\s*295", r"r9\s*290", r"r9\s*280", r"r9\s*270"]
+                    r7_patterns = [r"r7\s*370", r"r7\s*360", r"r7\s*350", r"r7\s*340",
+                                r"r7\s*260", r"r7\s*250", r"r7\s*240"]
+                    r5_patterns = [r"r5\s*340", r"r5\s*330", r"r5\s*240", r"r5\s*230"]
+
+                    if has_any_regex(gpu_name, r9_patterns + r7_patterns + r5_patterns):
+                        logger.info(f"[OCRText] DENY: R9 / R7 / R5")
+                        continue
+
+                    # DENY: old HD series (HD 4000–7000)
+                    if has_any(gpu_name, ["hd 4", "hd 5", "hd 6"]):
+                        logger.info(f"[OCRText] DENY: old HD series (HD 4000–7000)")
+                        continue
+
+                    # DENY: older Radeon Pro / FirePro workstation cards
+                    if has_any(
+                        gpu_name,
+                        ["radeon pro wx", "radeon pro w5", "radeon pro w4", "firepro w", "firepro s"],
+                    ):
+                        logger.info(f"[OCRText] DENY: older Radeon Pro / FirePro")
+                        continue
+
+                    # DENY: very old APU series
+                    if has_any(
+                        gpu_name,
+                        [" a4-", " a6-", " a8-", " a10-", " a12-",
+                        "bristol ridge", "kaveri", "carrizo", "stoney ridge"],
+                    ):
+                        logger.info(f"[OCRText] DENY: very old APU")
+                        continue
+
+                    # DENY: weak generic integrated "Radeon Graphics"
+                    if "radeon graphics" in gpu_name:
+                        # Allow only if it has RDNA iGPU identifiers (modern APUs)
+                        rdna_igpu_markers = [
+                            "880m", "870m", "860m",  # RDNA3.5
+                            "780m", "760m", "740m",  # RDNA3
+                            "680m", "660m", "650m", "630m", "610m",  # RDNA2
+                        ]
+                        if not has_any(gpu_name, rdna_igpu_markers):
+                            logger.info(f"[OCRText] DENY: weak generic integrated Radeon Graphics")
+                            continue
+
+                    logger.info(f"[OCRText] Detected AMD GPU")
+                    return True
+
+            logger.info(f"[OCRText] No compatible GPU found for directML")
+            return False
+
+        except Exception:
+            logger.exception("[OCRText] use_directml() failed")
+            return False
+
+    def has_intel_cpu(self) -> bool:
+        """Rough check if CPU is Intel."""
+        try:
+            cpu_info = (platform.processor() or platform.machine() or "").lower()
+            if "intel" in cpu_info:
+                logger.info(f"[OCRText] Detected Intel CPU: {cpu_info}")
+                return True
+            else:
+                return False
+        except Exception:
+            return False
+
+    def get_cached_reader(self):
+        """ Return a cached RapidOCR reader, chosen based on hardware. -NVIDIA/AMD GPU->DirectML with ONNX Runtime -Intel->OpenVINO -Others->ONNX Runtime"""
+        if self._reader_cache is not None:
+            return self._reader_cache
+
+        #logger.info("[OCRText] Initializing RapidOCR reader")
+
+        try:
+            from rapidocr import EngineType, LangDet, ModelType, OCRVersion, RapidOCR
+        except Exception as e:
+            #logger.exception(f"[OCRText] Failed to import RapidOCR: {e}")
+            raise RuntimeError(f"No suitable RapidOCR backend found. {e}")
+        
+        # # # --- GPU (DirectML: NVIDIA / AMD) ---'
+        if self.use_directml():
+            import onnxruntime as ort
+            providers = ort.get_available_providers()
+            print(f"[OCRText] Available providers: {providers}")
+            if "DmlExecutionProvider" in providers:
+                try:
+                    self._reader_cache = RapidOCR(params={"EngineConfig.onnxruntime.use_dml": True,"Global.use_cls": False,
+                                                          "Rec.ocr_version": OCRVersion.PPOCRV5,
+                                                          #"Det.lang_type": LangDet.MULTI, "Det.ocr_version": OCRVersion.PPOCRV4, "Rec.lang_type": LangDet.CH, 
+                                                          })
+                    logger.info(f"[OCRText] Loaded Engine: ONNX Runtime DirectML (GPU)")
+                    return self._reader_cache
+                
+                except (requests.exceptions.RequestException, urllib3.exceptions.HTTPError,
+                                    TimeoutError) as e:
+                    self._reader_cache = RapidOCR(params={"EngineConfig.onnxruntime.use_dml": True,"Global.use_cls": False,})
+                    logger.info(f"[OCRText] Loaded Engine: ONNX Runtime DirectML (GPU)")
+                    return self._reader_cache                    
+                except Exception as e:
+                    logger.warning(f"[OCRText] GPU detected, but DirectML failed to load: {e}")
+            else:
+                # print('DmlExecutionProvider not found')
+                logger.warning(f"[OCRText] Cannot find DmlExecutionProvider")
+
+        # #  # --- Intel (OpenVINO) ---
+        if self.has_intel_cpu():
+            if importlib.util.find_spec("openvino") is not None:
+                try:
+                    self._reader_cache = RapidOCR(params={
+                        "Det.engine_type": EngineType.OPENVINO, "Cls.engine_type": EngineType.OPENVINO, "Rec.engine_type": EngineType.OPENVINO,
+                        "Global.use_cls": False,"Det.device_name": "AUTO", "Cls.device_name": "AUTO","Rec.device_name": "AUTO",
+                        "Rec.ocr_version": OCRVersion.PPOCRV5,
+                        # "Det.lang_type": LangDet.MULTI, "Det.ocr_version": OCRVersion.PPOCRV4, "Rec.lang_type": LangDet.CH, "Rec.ocr_version": OCRVersion.PPOCRV5
+                    })
+                    logger.info("[OCRText] Loaded Engine: OpenVINO (Intel CPU)")
+                    return self._reader_cache
+                except (requests.exceptions.RequestException, urllib3.exceptions.HTTPError,
+                                    TimeoutError) as e:
+                    self._reader_cache = RapidOCR(params={
+                        "Det.engine_type": EngineType.OPENVINO, "Cls.engine_type": EngineType.OPENVINO, "Rec.engine_type": EngineType.OPENVINO,
+                        "Global.use_cls": False,"Det.device_name": "AUTO", "Cls.device_name": "AUTO","Rec.device_name": "AUTO",                       
+                    })
+                    logger.info("[OCRText] Loaded Engine: OpenVINO (Intel CPU)")
+                    return self._reader_cache
+                
+                except Exception as e:
+                    logger.warning(f"[OCRText] Intel CPU detected, but OpenVINO failed to load: {e}")        
+
+        try:
+            self._reader_cache = RapidOCR(params={"Global.use_cls": False,
+                                                  "Rec.ocr_version": OCRVersion.PPOCRV5,
+                                                  #"Det.lang_type": LangDet.MULTI, "Det.ocr_version": OCRVersion.PPOCRV4, "Rec.lang_type": LangDet.CH, "Rec.ocr_version": OCRVersion.PPOCRV5
+                                                  })
+            logger.info("[OCRText] Loaded Engine: ONNX Runtime")
+            return self._reader_cache
+        except (requests.exceptions.RequestException,
+                urllib3.exceptions.HTTPError,
+                TimeoutError) as e:
+            self._reader_cache = RapidOCR(params={"Global.use_cls": False,})
+            logger.info("[OCRText] Loaded Engine: ONNX Runtime")
+            return self._reader_cache
+        except Exception as e:
+            logger.exception(f"[OCRText] ONNX Runtime backend failed to load: {e}")
+            raise RuntimeError(f"No suitable RapidOCR backend found. {e}")            
+
+    def _send_ocr_result(self, json_output):
+        """Send OCR results to server with error handling."""
+        try:
+            payload = {
+                'screenshot_id': self.screenshot_id,
+                'ocr_text': json.dumps(json_output)
+            }
+            response = requests.post(self.server_url, json=payload)
+            response.raise_for_status()
+        except requests.exceptions.RequestException as req_e:
+            logger.error(f"Error during API request: {req_e}")
+        except Exception as e:
+            logger.error(f"Error sending OCR result: {e}")
+        
+    def run_ocr(self, min_conf=0.9, save_box_info=False, save_conf_info=False):
+
+        # Main OCR execution function
+        t_init = time.perf_counter()
+
+        img = cv2.imread(self.image_path, cv2.IMREAD_COLOR)
+        if img is None:
+            raise ValueError("Failed to load image")
+        #logger.info(f"[TIMING] Reading the image: {time.perf_counter() - t_init:.3f}s")
+        #_t_ocr_mode = time.perf_counter()
+
+        
+        h,w = img.shape[:2]        
+
+        reader = self.get_cached_reader() # get RapidOCR reader
+        output = None
+        try:
+            output = reader(img)            
+        except Exception:
+            logger.exception("[OCRText] reader(img) failed during fullscreen_ocr")
+            raise
+
+        if not output:
+            logger.info("[OCRText] No text detected")
+            json_output = {"data": [{"text": "No text detected"}]} 
+            self._send_ocr_result(json_output)        
+        else:
+
+            t_ocr_total = time.perf_counter() - t_init
+            logger.info(f"[OCRText] run_ocr time: {t_ocr_total:.2f}s")
+            #logger.info(f"[TIMING] ocr_execution: {time.perf_counter() - _t_ocr_mode:.3f}s")
+
+            json_output = {
+                "data": []
+            }
+
+            for box, text, conf in zip(output.boxes, output.txts, output.scores):               
+                if conf < min_conf:
+                    continue
+                json_data = {"text": text}
+                # if save_conf_info:
+                #     json_data["confidence"] = float(conf)
+                # if save_box_info:
+                #     json_data["box"] = [[float(p[0]), float(p[1])] for p in box]
+                json_output['data'].append(json_data)
+
+
+            # with open('data.json', 'w', encoding='utf-8') as f:
+            #     json.dump(json_output, f, ensure_ascii=False)
+
+            self._send_ocr_result(json_output)
+
+if __name__ == "__main__":
+    server_url = ""
+    screenshot_id = ""
+    image_path = "no-text.png"
+    ActiveWindowOCRText(server_url, screenshot_id, image_path, warmup=True).run_ocr()
+    # ocr = ActiveWindowOCRText(server_url, screenshot_id, warmup=True)
+    # # ocr.run_ocr(img_path=r"C:\Users\User\Pictures\ss_test.PNG")    
+    # result = ocr.run_ocr(img_path=r"ch.png")    
+
+    # print(result)
+    
