@@ -13,15 +13,16 @@ sd-ocr-event = "sd_ocr_event:main"
 python = ">=3.11,<3.15"
 typing_extensions = "4.15.0"
 charset-normalizer = "3.4.7"
-onnxruntime-directml = "1.23.0"
-opencv-python = "4.10.0.84"
 openvino = { version = "2025.4.1", extras = ["onnx"] }
 openvino-telemetry = "2025.2.0"
 numpy = "1.26.4"
-rapidocr = "3.5.0"
 pyopencl = "2026.1.2"
 pyinstaller = "6.18.0"
 pillow = "10.2.0"
+rapidocr = "3.6.0"
+onnxruntime = "1.19.2"
+opencv-python-headless = "4.9.0.80"
+Shapely = "1.8.5.post1"
 
 [build-system]
 requires = ["poetry-core"]

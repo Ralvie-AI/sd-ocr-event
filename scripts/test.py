@@ -1,58 +1,64 @@
-import os 
-import sys 
-import logging
 import subprocess
-from pathlib import Path
+import os 
+import sys
+import time
+import logging 
 
+
+EXE_NAME = 'sd-ocr-event'
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+EXE_PATH = os.path.join(
+                    os.path.expanduser("~"),
+                    "Desktop", "activitywatch", EXE_NAME, "dist", EXE_NAME, EXE_NAME)
 
 
-def start_exe(exec_cmd, timeout_sec=15):
-    logger.info(f"Starting module {exec_cmd}")
-    if not isinstance(exec_cmd, list):
-        exec_cmd = [exec_cmd]
-
-    logger.debug("Running: {}".format(exec_cmd))
-
-    # Don't display a console window on Windows
-    # See: https://github.com/ActivityWatch/activitywatch/issues/212
-    startupinfo = None
-    if sys.platform in ("win32", "cygwin"):
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-
+def start_exe(command_list):
     try:
-        # Use the 'with' statement to ensure underlying handles are cleaned up even if exceptions occur
-        with subprocess.Popen(
-                exec_cmd,
-                universal_newlines=True,
-                startupinfo=startupinfo
-        ) as proc:
-            try:
-                # Block and wait, with a timeout mechanism to prevent the process accumulation
-                proc.wait(timeout=timeout_sec)
-            except subprocess.TimeoutExpired:
-                # If the exe hangs, force kill it to prevent processes from piling up!
-                logger.error(f"Task execution timed out ({timeout_sec}s)! Force cleaning up...")
-                proc.kill()
-                proc.wait()
-    except Exception as e:
-        logger.error(f"Unexpected error occurred while starting the process: {e}")
+        logger.info(f"Starting {EXE_NAME}...")
+        logger.debug("Command: %s", " ".join(command_list))
 
+        proc = subprocess.Popen(
+            command_list,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        
+        logger.debug(f"Started pid={proc.pid}")
+
+        time.sleep(2)
+
+        if proc.poll() is not None:
+            stdout, stderr = proc.communicate()
+
+            logger.error(
+                f"{EXE_NAME} exited immediately. "
+                f"returncode={proc.returncode}"
+            )
+
+            if stdout:
+                logger.error(stdout.decode(errors="ignore"))
+
+            if stderr:
+                logger.error(stderr.decode(errors="ignore"))
+        else:
+            logger.debug(f"{EXE_NAME} is still running")
+
+    except Exception:
+        logger.exception(f"Failed to start {EXE_NAME}")
 
 
 if __name__ == "__main__":
-    exe_dir = script_dir = Path(__file__).resolve().parent.parent
-    script_dir = Path(__file__).resolve().parent
-    ocr_exe = os.path.join(exe_dir, "dist", "sd-ocr-event", "sd-ocr-event.exe")
-    if os.path.exists(ocr_exe):
-        print("ocr_exe", ocr_exe)
 
-    img_file = os.path.join(script_dir, "test.png")
+    logger.info(f"exe is file => {os.path.isfile(EXE_PATH)}")
 
-    if os.path.exists(img_file):
-        print("img_file", img_file)
+    command_list = [
+        EXE_PATH,
+        "--server_url", "",
+        "--image_path", "test.png",
+        "--event_id", '10',
+    ]
 
-    cmd = [ocr_exe, '--server_url', 'http://localhost:7600/screenshot/update_ocr_text', '--image_path',
-      img_file, '--screenshot_id', '1']
-    start_exe(cmd)
+
+    logger.info(f"command_list => {str(command_list)}")
+    start_exe(command_list)

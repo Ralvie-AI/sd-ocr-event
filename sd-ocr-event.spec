@@ -1,36 +1,18 @@
 import os
-
 import rapidocr
+from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_all
+rapidocr_path = Path(rapidocr.__file__).parent
 
-# ---------------------------------------------------------
-# Collect RapidOCR
-# ---------------------------------------------------------
+datas = [
+    (rapidocr_path / "default_models.yaml", "rapidocr"),
+    (rapidocr_path / "models", "rapidocr/models"),
+    (rapidocr_path / "config.yaml", "rapidocr"),
+]
 
-rapidocr_datas, rapidocr_binaries, rapidocr_hiddenimports = collect_all("rapidocr")
+binaries = [(Path.cwd().parent.parent / "activitywatch/scripts/dylib/libsqlcipher.0.dylib", '.'), ]
 
-# ---------------------------------------------------------
-# Collect OpenVINO
-# ---------------------------------------------------------
-
-openvino_datas, openvino_binaries, openvino_hiddenimports = collect_all("openvino")
-
-# ---------------------------------------------------------
-# Merge package data
-# ---------------------------------------------------------
-
-datas = []
-datas.extend(rapidocr_datas)
-datas.extend(openvino_datas)
-
-binaries = []
-binaries.extend(rapidocr_binaries)
-binaries.extend(openvino_binaries)
-
-hiddenimports = []
-hiddenimports.extend(rapidocr_hiddenimports)
-hiddenimports.extend(openvino_hiddenimports)
+hiddenimports = ["rapidocr", "onnxruntime", "torch", "openvino", "shapely", "shapely.geometry",]
 
 # ---------------------------------------------------------
 # Analysis
