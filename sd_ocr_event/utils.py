@@ -11,6 +11,19 @@ from time import sleep as time_sleep
 from logging.handlers import RotatingFileHandler
 import platformdirs
 
+from typing import Tuple, Optional
+
+from PIL import Image, ImageDraw
+import cv2
+import numpy as np
+
+# Constants for DWM to get the real window size (minus shadows)
+DWMWA_EXTENDED_FRAME_BOUNDS = 9
+BLACK_RATIO_THRESHOLD = 0.05  # 5%
+BLACK_PIXEL_THRESHOLD = 10
+BOX_THICKNESS = 4
+BOX_COLOR = (255, 0, 0)  # Red in RGB
+
 GetDirFunc = Callable[[Optional[str]], str]
 
 logger = logging.getLogger(__name__)
@@ -249,3 +262,46 @@ def get_log_dir(module_name: Optional[str] = None) -> str:  # pragma: no cover
     else:
         log_dir = platformdirs.user_log_dir("Sundial")
     return os.path.join(log_dir, module_name) if module_name else log_dir
+
+
+# ─────────────────────────────────────────────
+#  Black-background crop
+# ─────────────────────────────────────────────
+
+def crop_black_background(
+    image_path: str,
+    output_path: Optional[str] = None,
+    threshold: int = BLACK_PIXEL_THRESHOLD,
+) -> None:
+    img = cv2.imread(image_path)
+    if img is None:
+        logger.warning(f"Could not read image: {image_path}")
+        return
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    black_pixels = np.sum(gray <= threshold)
+    black_ratio = black_pixels / gray.size
+
+    if black_ratio <= BLACK_RATIO_THRESHOLD:
+        logger.info("No significant black background — skipping crop.")
+        return
+
+    logger.info(f"Black background detected ({black_ratio:.1%}) — cropping.")
+
+    mask = gray > threshold
+    coords = np.argwhere(mask)
+    if len(coords) == 0:
+        logger.warning("Image is entirely black — skipping.")
+        return
+
+    y_min, x_min = coords.min(axis=0)
+    y_max, x_max = coords.max(axis=0)
+
+    cropped = img[y_min : y_max + 1, x_min : x_max + 1]
+    result = Image.fromarray(cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB))
+
+    if output_path:
+        result.save(output_path)
+        logger.info(f"Cropped image saved: {output_path}")
+        if os.path.exists(image_path):
+            os.remove(image_path)

@@ -4,14 +4,20 @@ import os
 import time
 import re
 import logging
+import shutil
 import importlib.util
 import urllib3
+from glob import glob
+from pathlib import Path
 
 import numpy as np
 import cv2
 import pyopencl as cl
 import requests
+from PIL import Image
 
+from sd_ocr_event.const import EVENT_SCREENSHOT_FOLDER_USER, EVENT_SCREENSHOT_FOLDER
+from sd_ocr_event.utils import crop_black_background
 
 os.environ.pop('HTTP_PROXY', None)
 os.environ.pop('HTTPS_PROXY', None)
@@ -20,11 +26,11 @@ os.environ.pop('HTTPS_PROXY', None)
 logger = logging.getLogger(__name__)
 
 class ActiveWindowOCRText:
-    def __init__(self, server_url, screenshot_id, image_path, warmup=False) -> None:
+    def __init__(self, server_url, event_id, image_path, warmup=False) -> None:
         super().__init__()
         self._reader_cache = None
         self.server_url = server_url
-        self.screenshot_id = screenshot_id
+        self.event_id = event_id
         self.image_path = image_path
 
         if warmup:
@@ -341,6 +347,73 @@ class ActiveWindowOCRText:
             #     json.dump(json_output, f, ensure_ascii=False)
 
             self._send_ocr_result(json_output)
+
+    def get_image_path_and_event_id(self):
+            screenshot_folder_user = EVENT_SCREENSHOT_FOLDER_USER.format(user_id=self.user_id)
+            filename_list = glob(os.path.join(screenshot_folder_user, "*.png"))
+    
+            filtered_files = [f for f in filename_list if not f.endswith("_ocr.png")]
+    
+            filename_list_tmp = sorted(filtered_files, reverse=False)            
+          
+            if not os.path.isdir(EVENT_SCREENSHOT_FOLDER):
+                os.makedirs(EVENT_SCREENSHOT_FOLDER)
+             
+    
+            screenshot_path = self.move_image_file(filename_list_tmp[-1])         
+
+            for tmp_file_data in filename_list:
+                os.remove(tmp_file_data)              
+           
+
+    def move_image_file(self, tmp_file):
+            # logger.info(f"tmp_file => {tmp_file}")
+            full_screen_img = Path(tmp_file).name
+            tmp_ocr, ocr_ext = os.path.splitext(full_screen_img)
+            ocr_img = tmp_ocr + "_ocr.png"
+            screenshot_path = os.path.join(EVENT_SCREENSHOT_FOLDER, full_screen_img)
+            screenshot_ocr_path = os.path.join(EVENT_SCREENSHOT_FOLDER, ocr_img)
+            
+            tmp_ocr_full_path, ocr_tmp_ext = os.path.splitext(tmp_file)
+            ocr_tmp_file = tmp_ocr_full_path + "_ocr.png"
+    
+            shutil.copy2(tmp_file, screenshot_path)
+            shutil.copy2(ocr_tmp_file, screenshot_ocr_path)
+    
+            crop_black_background(screenshot_path, screenshot_path)
+    
+            if os.path.getsize(screenshot_path) > 1024 * 1024:
+                file_size = self.get_readable_file_size(screenshot_path)
+                logger.info(f"File size => {file_size}")
+                self.aggressive_compress_png(screenshot_path, screenshot_path)
+    
+            return screenshot_path
+
+    def aggressive_compress_png(self, input_path, output_path):                   
+                
+            with Image.open(input_path) as img:
+                # 1. Convert to RGB if necessary
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
+                    
+                # 2. Resize the image (PNGs at 4K or 1080p are rarely under 500kb)
+                # We will scale it down to a max width of 1280px to save space
+                width, height = img.size
+                if width > 1280:
+                    ratio = 1280 / width
+                    new_size = (1280, int(height * ratio))
+                    img = img.resize(new_size, Image.Resampling.LANCZOS)
+                    print(f"Resized to {new_size[0]}x{new_size[1]}")
+    
+                # 3. Apply Quantization (The most important step for PNG size)
+                # We reduce the image to a 256-color palette         
+                img = img.convert("P", palette=Image.ADAPTIVE, colors=256)
+    
+                os.remove(input_path)
+                
+                # 4. Save with optimization
+                img.save(output_path, "PNG", optimize=True)
+
 
 if __name__ == "__main__":
     server_url = ""

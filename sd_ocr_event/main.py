@@ -11,7 +11,7 @@ def main():
     parser = argparse.ArgumentParser(description="Imate to Text")
     parser.add_argument("--server_url", required=True, help="URL to update ocr text")
     parser.add_argument("--image_path", required=True, help="User ID for identification")
-    parser.add_argument("--screenshot_id", type=int, default=0, help="Screenshot ID")
+    parser.add_argument("--event_id", type=int, default=0, help="Event ID")
 
     args = parser.parse_args()
 
@@ -21,7 +21,7 @@ def main():
     ActiveWindowOCRText(
         server_url=args.server_url,
         image_path=args.image_path,
-        screenshot_id=args.screenshot_id
+        event_id=args.event_id
     ).run_ocr()    
 
 
