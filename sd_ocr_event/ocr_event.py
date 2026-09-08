@@ -9,6 +9,7 @@ import importlib.util
 import urllib3
 from glob import glob
 from pathlib import Path
+from datetime import datetime, timezone
 
 import numpy as np
 import cv2
@@ -25,13 +26,15 @@ os.environ.pop('HTTPS_PROXY', None)
 
 logger = logging.getLogger(__name__)
 
-class ActiveWindowOCRText:
-    def __init__(self, server_url, event_id, image_path, warmup=False) -> None:
+class ActiveEventWindowOCRText:
+    def __init__(self, server_url, event_id, user_id, image_path, warmup=False) -> None:
         super().__init__()
         self._reader_cache = None
-        self.server_url = server_url
+        self.server_url = server_url if server_url != None else "http://localhost:7600/screenshot/event/screenshots"
         self.event_id = event_id
+        self.user_id = user_id
         self.image_path = image_path
+        self.image_org = ""
 
         if warmup:
             self._warmup()
@@ -43,9 +46,8 @@ class ActiveWindowOCRText:
             cv2.putText(warmup_img, "Warmup", (10, 150),cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 0, 0), 3)
             _ = reader(warmup_img)
             del warmup_img
-            #print("[OCRText] Warmup completed")
         except Exception:
-            #logger.exception("[OCRText] Warmup failed")
+            logger.exception("[OCRText] Warmup failed")
             raise
             
 
@@ -207,11 +209,9 @@ class ActiveWindowOCRText:
         """ Return a cached RapidOCR reader, chosen based on hardware. -NVIDIA/AMD GPU->DirectML with ONNX Runtime -Intel->OpenVINO -Others->ONNX Runtime"""
         if self._reader_cache is not None:
             return self._reader_cache
-
-        #logger.info("[OCRText] Initializing RapidOCR reader")
-
+        
         try:
-            from rapidocr import EngineType, LangDet, ModelType, OCRVersion, RapidOCR
+            from rapidocr import EngineType, OCRVersion, RapidOCR
         except Exception as e:
             #logger.exception(f"[OCRText] Failed to import RapidOCR: {e}")
             raise RuntimeError(f"No suitable RapidOCR backend found. {e}")
@@ -225,7 +225,6 @@ class ActiveWindowOCRText:
                 try:
                     self._reader_cache = RapidOCR(params={"EngineConfig.onnxruntime.use_dml": True,"Global.use_cls": False,
                                                           "Rec.ocr_version": OCRVersion.PPOCRV5,
-                                                          #"Det.lang_type": LangDet.MULTI, "Det.ocr_version": OCRVersion.PPOCRV4, "Rec.lang_type": LangDet.CH, 
                                                           })
                     logger.info(f"[OCRText] Loaded Engine: ONNX Runtime DirectML (GPU)")
                     return self._reader_cache
@@ -238,7 +237,6 @@ class ActiveWindowOCRText:
                 except Exception as e:
                     logger.warning(f"[OCRText] GPU detected, but DirectML failed to load: {e}")
             else:
-                # print('DmlExecutionProvider not found')
                 logger.warning(f"[OCRText] Cannot find DmlExecutionProvider")
 
         # #  # --- Intel (OpenVINO) ---
@@ -249,8 +247,7 @@ class ActiveWindowOCRText:
                         "Det.engine_type": EngineType.OPENVINO, "Cls.engine_type": EngineType.OPENVINO, "Rec.engine_type": EngineType.OPENVINO,
                         "Global.use_cls": False,"Det.device_name": "AUTO", "Cls.device_name": "AUTO","Rec.device_name": "AUTO",
                         "Rec.ocr_version": OCRVersion.PPOCRV5,
-                        # "Det.lang_type": LangDet.MULTI, "Det.ocr_version": OCRVersion.PPOCRV4, "Rec.lang_type": LangDet.CH, "Rec.ocr_version": OCRVersion.PPOCRV5
-                    })
+                        })
                     logger.info("[OCRText] Loaded Engine: OpenVINO (Intel CPU)")
                     return self._reader_cache
                 except (requests.exceptions.RequestException, urllib3.exceptions.HTTPError,
@@ -268,7 +265,6 @@ class ActiveWindowOCRText:
         try:
             self._reader_cache = RapidOCR(params={"Global.use_cls": False,
                                                   "Rec.ocr_version": OCRVersion.PPOCRV5,
-                                                  #"Det.lang_type": LangDet.MULTI, "Det.ocr_version": OCRVersion.PPOCRV4, "Rec.lang_type": LangDet.CH, "Rec.ocr_version": OCRVersion.PPOCRV5
                                                   })
             logger.info("[OCRText] Loaded Engine: ONNX Runtime")
             return self._reader_cache
@@ -289,7 +285,8 @@ class ActiveWindowOCRText:
                 'screenshot_id': self.screenshot_id,
                 'ocr_text': json.dumps(json_output)
             }
-            response = requests.post(self.server_url, json=payload)
+            server_url = "http://localhost:7600/screenshot/update_ocr_text"
+            response = requests.post(server_url, json=payload)
             response.raise_for_status()
         except requests.exceptions.RequestException as req_e:
             logger.error(f"Error during API request: {req_e}")
@@ -304,11 +301,6 @@ class ActiveWindowOCRText:
         img = cv2.imread(self.image_path, cv2.IMREAD_COLOR)
         if img is None:
             raise ValueError("Failed to load image")
-        #logger.info(f"[TIMING] Reading the image: {time.perf_counter() - t_init:.3f}s")
-        #_t_ocr_mode = time.perf_counter()
-
-        
-        h,w = img.shape[:2]        
 
         reader = self.get_cached_reader() # get RapidOCR reader
         output = None
@@ -326,7 +318,6 @@ class ActiveWindowOCRText:
 
             t_ocr_total = time.perf_counter() - t_init
             logger.info(f"[OCRText] run_ocr time: {t_ocr_total:.2f}s")
-            #logger.info(f"[TIMING] ocr_execution: {time.perf_counter() - _t_ocr_mode:.3f}s")
 
             json_output = {
                 "data": []
@@ -348,46 +339,78 @@ class ActiveWindowOCRText:
 
             self._send_ocr_result(json_output)
 
-    def get_image_path_and_event_id(self):
-            screenshot_folder_user = EVENT_SCREENSHOT_FOLDER_USER.format(user_id=self.user_id)
-            filename_list = glob(os.path.join(screenshot_folder_user, "*.png"))
-    
-            filtered_files = [f for f in filename_list if not f.endswith("_ocr.png")]
-    
-            filename_list_tmp = sorted(filtered_files, reverse=False)            
-          
-            if not os.path.isdir(EVENT_SCREENSHOT_FOLDER):
-                os.makedirs(EVENT_SCREENSHOT_FOLDER)
-             
-    
-            screenshot_path = self.move_image_file(filename_list_tmp[-1])         
+        filenames = [self.image_org, self.image_path]
+        for filename in filenames:                
+            try:
+                os.remove(filename)
+            except OSError as e:
+                logger.error("Failed to remove %s : %s", filename, e)
+        
 
-            for tmp_file_data in filename_list:
-                os.remove(tmp_file_data)              
-           
+    def create_event_ocr(self):
+        screenshot_folder_user = EVENT_SCREENSHOT_FOLDER_USER.format(user_id=self.user_id)
+        filename_list = glob(os.path.join(screenshot_folder_user, "*.png"))
+
+        filtered_files = [f for f in filename_list if not f.endswith("_ocr.png")]
+
+        filename_list_tmp = sorted(filtered_files, reverse=False)            
+        
+        if not os.path.isdir(EVENT_SCREENSHOT_FOLDER):
+            os.makedirs(EVENT_SCREENSHOT_FOLDER)
+            
+        screenshot_path, screenshot_ocr_path = self.move_image_file(filename_list_tmp[-1])
+
+        for tmp_file_data in filename_list:
+            os.remove(tmp_file_data)
+
+        response = None
+        try:
+            capture_time =  datetime.now(timezone.utc)
+
+            payload = {
+                'file_location': screenshot_ocr_path,    
+                'created_at': capture_time.isoformat(),
+                'event_id': self.event_id,
+                'is_ocr_text_enabled': True,
+                'is_event_screenshot': True
+            }
+            logger.info(f"payload => {payload}")
+
+            response = requests.post(self.server_url, json=payload)
+            response.raise_for_status() # Raise an exception for bad status codes
+
+        except requests.exceptions.RequestException as req_e:
+            logger.error(f"Error during API request: {req_e}")
+        except Exception as e:
+            logger.error(f"Error in scheduled job: {e}")
+
+        self.image_path = screenshot_ocr_path
+        self.image_org = screenshot_path
+        self.screenshot_id = response.json()['screenshot_id']
+        self.run_ocr()
 
     def move_image_file(self, tmp_file):
-            # logger.info(f"tmp_file => {tmp_file}")
-            full_screen_img = Path(tmp_file).name
-            tmp_ocr, ocr_ext = os.path.splitext(full_screen_img)
-            ocr_img = tmp_ocr + "_ocr.png"
-            screenshot_path = os.path.join(EVENT_SCREENSHOT_FOLDER, full_screen_img)
-            screenshot_ocr_path = os.path.join(EVENT_SCREENSHOT_FOLDER, ocr_img)
-            
-            tmp_ocr_full_path, ocr_tmp_ext = os.path.splitext(tmp_file)
-            ocr_tmp_file = tmp_ocr_full_path + "_ocr.png"
-    
-            shutil.copy2(tmp_file, screenshot_path)
-            shutil.copy2(ocr_tmp_file, screenshot_ocr_path)
-    
-            crop_black_background(screenshot_path, screenshot_path)
-    
-            if os.path.getsize(screenshot_path) > 1024 * 1024:
-                file_size = self.get_readable_file_size(screenshot_path)
-                logger.info(f"File size => {file_size}")
-                self.aggressive_compress_png(screenshot_path, screenshot_path)
-    
-            return screenshot_path
+
+        full_screen_img = Path(tmp_file).name
+        tmp_ocr, ocr_ext = os.path.splitext(full_screen_img)
+        ocr_img = tmp_ocr + "_ocr.png"
+        screenshot_path = os.path.join(EVENT_SCREENSHOT_FOLDER, full_screen_img)
+        screenshot_ocr_path = os.path.join(EVENT_SCREENSHOT_FOLDER, ocr_img)
+        
+        tmp_ocr_full_path, ocr_tmp_ext = os.path.splitext(tmp_file)
+        ocr_tmp_file = tmp_ocr_full_path + "_ocr.png"
+
+        shutil.copy2(tmp_file, screenshot_path)
+        shutil.copy2(ocr_tmp_file, screenshot_ocr_path)
+
+        crop_black_background(screenshot_path, screenshot_path)
+
+        if os.path.getsize(screenshot_path) > 1024 * 1024:
+            file_size = self.get_readable_file_size(screenshot_path)
+            logger.info(f"File size => {file_size}")
+            self.aggressive_compress_png(screenshot_path, screenshot_path)
+
+        return screenshot_path, screenshot_ocr_path
 
     def aggressive_compress_png(self, input_path, output_path):                   
                 
@@ -419,7 +442,7 @@ if __name__ == "__main__":
     server_url = ""
     screenshot_id = ""
     image_path = "no-text.png"
-    ActiveWindowOCRText(server_url, screenshot_id, image_path, warmup=True).run_ocr()
+    ActiveEventWindowOCRText(server_url, screenshot_id, image_path, warmup=True).run_ocr()
     # ocr = ActiveWindowOCRText(server_url, screenshot_id, warmup=True)
     # # ocr.run_ocr(img_path=r"C:\Users\User\Pictures\ss_test.PNG")    
     # result = ocr.run_ocr(img_path=r"ch.png")    

@@ -2,7 +2,7 @@ import argparse
 import logging 
 
 from sd_ocr_event.utils import setup_logging
-from sd_ocr_event.ocr_event import ActiveWindowOCRText
+from sd_ocr_event.ocr_event import ActiveEventWindowOCRText
 
 logger = logging.getLogger(__name__)
     
@@ -19,7 +19,7 @@ def main():
     # Set up logging
     setup_logging("sd-ocr-event", log_file=True)
 
-    ActiveWindowOCRText(
+    ActiveEventWindowOCRText(
         server_url=args.server_url,
         event_id=args.event_id,
         user_id=args.user_id,
