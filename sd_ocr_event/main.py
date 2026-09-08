@@ -9,9 +9,10 @@ logger = logging.getLogger(__name__)
 def main():
 
     parser = argparse.ArgumentParser(description="Imate to Text")
-    parser.add_argument("--server_url", required=True, help="URL to update ocr text")
-    parser.add_argument("--image_path", required=True, help="User ID for identification")
+    parser.add_argument("--server_url", required=False, help="URL to update ocr text")    
     parser.add_argument("--event_id", type=int, default=0, help="Event ID")
+    parser.add_argument("--user_id", type=str, default="", help="User ID")
+    parser.add_argument("--image_path", type=str, default="", help="Image path")
 
     args = parser.parse_args()
 
@@ -20,10 +21,10 @@ def main():
 
     ActiveWindowOCRText(
         server_url=args.server_url,
-        image_path=args.image_path,
-        event_id=args.event_id
-    ).run_ocr()    
-
+        event_id=args.event_id,
+        user_id=args.user_id,
+        image_path= args.image_path
+    ).create_event_ocr()
 
 if __name__ == '__main__':
     main()
