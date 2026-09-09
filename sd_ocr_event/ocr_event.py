@@ -339,12 +339,12 @@ class ActiveEventWindowOCRText:
 
             self._send_ocr_result(json_output)
 
-        filenames = [self.image_org, self.image_path]
-        for filename in filenames:                
-            try:
-                os.remove(filename)
-            except OSError as e:
-                logger.error("Failed to remove %s : %s", filename, e)
+        # filenames = [self.image_org, self.image_path]
+        # for filename in filenames:                
+        #     try:
+        #         os.remove(filename)
+        #     except OSError as e:
+        #         logger.error("Failed to remove %s : %s", filename, e)
         
 
     def create_event_ocr(self):
@@ -357,37 +357,42 @@ class ActiveEventWindowOCRText:
         
         if not os.path.isdir(EVENT_SCREENSHOT_FOLDER):
             os.makedirs(EVENT_SCREENSHOT_FOLDER)
+
+        logger.info(f"filename_list_tmp => {filename_list_tmp}")
+        if len(filename_list_tmp) > 0:
             
-        screenshot_path, screenshot_ocr_path = self.move_image_file(filename_list_tmp[-1])
+            screenshot_path, screenshot_ocr_path = self.move_image_file(filename_list_tmp[-1])
 
-        for tmp_file_data in filename_list:
-            os.remove(tmp_file_data)
+            for tmp_file_data in filename_list:
+                os.remove(tmp_file_data)
 
-        response = None
-        try:
-            capture_time =  datetime.now(timezone.utc)
+            response = None
+            try:
+                capture_time =  datetime.now(timezone.utc)
 
-            payload = {
-                'file_location': screenshot_ocr_path,    
-                'created_at': capture_time.isoformat(),
-                'event_id': self.event_id,
-                'is_ocr_text_enabled': True,
-                'is_event_screenshot': True
-            }
-            logger.info(f"payload => {payload}")
+                payload = {
+                    'file_location': screenshot_ocr_path,    
+                    'created_at': capture_time.isoformat(),
+                    'event_id': self.event_id,
+                    'is_ocr_text_enabled': True,
+                    'is_event_screenshot': True
+                }
+                logger.info(f"payload => {payload}")
 
-            response = requests.post(self.server_url, json=payload)
-            response.raise_for_status() # Raise an exception for bad status codes
+                response = requests.post(self.server_url, json=payload)
+                response.raise_for_status() # Raise an exception for bad status codes
 
-        except requests.exceptions.RequestException as req_e:
-            logger.error(f"Error during API request: {req_e}")
-        except Exception as e:
-            logger.error(f"Error in scheduled job: {e}")
+            except requests.exceptions.RequestException as req_e:
+                logger.error(f"Error during API request: {req_e}")
+            except Exception as e:
+                logger.error(f"Error in scheduled job: {e}")
 
-        self.image_path = screenshot_ocr_path
-        self.image_org = screenshot_path
-        self.screenshot_id = response.json()['screenshot_id']
-        self.run_ocr()
+            self.image_path = screenshot_ocr_path
+            self.image_org = screenshot_path
+            self.screenshot_id = response.json()['screenshot_id']
+            self.run_ocr()
+        else:
+            logger.info("There is no file found.")
 
     def move_image_file(self, tmp_file):
 
@@ -403,12 +408,12 @@ class ActiveEventWindowOCRText:
         shutil.copy2(tmp_file, screenshot_path)
         shutil.copy2(ocr_tmp_file, screenshot_ocr_path)
 
-        crop_black_background(screenshot_path, screenshot_path)
+        # crop_black_background(screenshot_path, screenshot_path)
 
-        if os.path.getsize(screenshot_path) > 1024 * 1024:
-            file_size = self.get_readable_file_size(screenshot_path)
-            logger.info(f"File size => {file_size}")
-            self.aggressive_compress_png(screenshot_path, screenshot_path)
+        # if os.path.getsize(screenshot_path) > 1024 * 1024:
+        #     file_size = self.get_readable_file_size(screenshot_path)
+        #     logger.info(f"File size => {file_size}")
+        #     self.aggressive_compress_png(screenshot_path, screenshot_path)
 
         return screenshot_path, screenshot_ocr_path
 
