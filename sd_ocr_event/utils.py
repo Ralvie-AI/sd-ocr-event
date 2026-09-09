@@ -16,6 +16,11 @@ from typing import Tuple, Optional
 from PIL import Image, ImageDraw
 import cv2
 import numpy as np
+from sd_ocr_event.const import EVENT_SCREENSHOT_FOLDER_USER, EVENT_SCREENSHOT_FOLDER
+from pathlib import Path
+from glob import glob
+import shutil
+
 
 # Constants for DWM to get the real window size (minus shadows)
 DWMWA_EXTENDED_FRAME_BOUNDS = 9
@@ -305,3 +310,119 @@ def crop_black_background(
         logger.info(f"Cropped image saved: {output_path}")
         if os.path.exists(image_path):
             os.remove(image_path)
+
+def get_image_name_to_utc_dt(filename: str) -> datetime:
+    import os
+    import re
+    from datetime import datetime, timezone
+
+    filename = os.path.basename(filename)
+
+    #แก้ Regex ตรงนี้: ใส่ (\.\d+)? เพื่อบอกว่า "ทศนิยมวินาที จะมีหรือไม่มีก็ได้"
+    match = re.search(r"\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}(\.\d+)?Z", filename)
+
+    if not match:
+        raise ValueError(f"Invalid filename format: {filename}")
+
+    ts_part = match.group(0)
+
+    #เพิ่มการตรวจสอบ: ถ้าชื่อไฟล์ไม่มีจุดทศนิยม ให้แกะฟอร์แมตแบบไม่มี .%f
+    if "." not in ts_part:
+        return datetime.strptime(
+            ts_part,
+            "%Y-%m-%dT%H-%M-%SZ"
+        ).replace(tzinfo=timezone.utc)
+    else:
+        return datetime.strptime(
+            ts_part,
+            "%Y-%m-%dT%H-%M-%S.%fZ"
+        ).replace(tzinfo=timezone.utc)
+
+def get_image(start_time: datetime, end_time: datetime, user_id: str):
+
+    screenshot_folder_user = EVENT_SCREENSHOT_FOLDER_USER.format(user_id=user_id)
+    filename_list = glob(os.path.join(screenshot_folder_user, "*.png"))
+
+    if filename_list:
+        try: 
+            filtered_files = [f for f in filename_list if not f.endswith("_active.png")]
+            image_time_list = sorted(
+                    image_time
+                    for image_time in filtered_files
+                    if start_time <= get_image_name_to_utc_dt(image_time) <= end_time
+            )
+
+            if image_time_list:
+                screenshot_path = _move_image_file(image_time_list[-1])
+                screenshot_time = get_image_name_to_utc_dt(screenshot_path)
+                logger.info(f'[SCREENSHOT_PATH]: {screenshot_path}')
+                logger.info(f'[SCREENSHOT_TIME]: {screenshot_time}')
+
+                for tmp_file_data in filename_list:
+                    os.remove(tmp_file_data)  
+
+                return screenshot_path, screenshot_time
+            else:
+                return None, None
+            
+        except Exception as e:
+            logger.info(f"[OCRText] {e}")
+            raise RuntimeError(e)
+    else:
+        return None, None
+
+def _get_readable_file_size(file_path):
+    size_bytes = os.path.getsize(file_path)
+        
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if size_bytes < 1024:
+            return f"{size_bytes:.2f} {unit}"
+        size_bytes /= 1024
+
+def _move_image_file(tmp_file):
+        # logger.info(f"tmp_file => {tmp_file}")
+        full_screen_img = Path(tmp_file).name
+        tmp_ocr, ocr_ext = os.path.splitext(full_screen_img)
+        ocr_img = tmp_ocr + "_active.png"
+        # screenshot_path = os.path.join(EVENT_SCREENSHOT_FOLDER, full_screen_img)
+        screenshot_ocr_path = os.path.join(EVENT_SCREENSHOT_FOLDER, ocr_img)
+            
+        tmp_ocr_full_path, ocr_tmp_ext = os.path.splitext(tmp_file)
+        ocr_tmp_file = tmp_ocr_full_path + "_active.png"
+    
+        #shutil.copy2(tmp_file, screenshot_path)
+        shutil.copy2(ocr_tmp_file, screenshot_ocr_path)
+    
+        #crop_black_background(screenshot_path, screenshot_path)
+    
+        # if os.path.getsize(screenshot_path) > 1024 * 1024:
+        #     file_size = _get_readable_file_size(screenshot_path)
+        #     logger.info(f"File size => {file_size}")
+        #     _aggressive_compress_png(screenshot_path, screenshot_path)
+    
+        return screenshot_ocr_path
+
+def _aggressive_compress_png(input_path, output_path):                   
+                
+        with Image.open(input_path) as img:
+            # 1. Convert to RGB if necessary
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+                    
+            # 2. Resize the image (PNGs at 4K or 1080p are rarely under 500kb)
+            # We will scale it down to a max width of 1280px to save space
+            width, height = img.size
+            if width > 1280:
+                ratio = 1280 / width
+                new_size = (1280, int(height * ratio))
+                img = img.resize(new_size, Image.Resampling.LANCZOS)
+                print(f"Resized to {new_size[0]}x{new_size[1]}")
+    
+            # 3. Apply Quantization (The most important step for PNG size)
+            # We reduce the image to a 256-color palette         
+            img = img.convert("P", palette=Image.ADAPTIVE, colors=256)
+    
+            os.remove(input_path)
+                
+            # 4. Save with optimization
+            img.save(output_path, "PNG", optimize=True)

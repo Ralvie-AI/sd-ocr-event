@@ -55,10 +55,8 @@ if __name__ == "__main__":
     command_list = [
         EXE_PATH,
         "--server_url", "",
-        "--image_path", "test.png",
-        "--event_id", '10',
+        "--event_id", "955","964",
+        "--image_path", "","",
     ]
-
-
     logger.info(f"command_list => {str(command_list)}")
     start_exe(command_list)

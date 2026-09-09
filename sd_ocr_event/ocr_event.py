@@ -13,19 +13,18 @@ import shutil
 
 from PIL import Image
 from pathlib import Path
-from glob import glob
 
 from sd_ocr_event.const import EVENT_SCREENSHOT_FOLDER_USER, EVENT_SCREENSHOT_FOLDER
-from sd_ocr_event.utils import crop_black_background
-
+from sd_ocr_event.utils import crop_black_background, get_image_name_to_utc_dt, get_image
+from datetime import datetime
 logger = logging.getLogger(__name__)
 
 
 class ActiveWindowOCRText:
-    def __init__(self, server_url, event_id, image_path, warmup=False) -> None:
+    def __init__(self, server_url: str, event_id: list[int], image_path: list[str], warmup=False) -> None:
         super().__init__()
         self._reader_cache = None
-        self.server_url = server_url
+        self.server_url = server_url if server_url else "http://localhost:7600/ocr_event/"
         self.event_id = event_id
         self.image_path = image_path
 
@@ -152,14 +151,14 @@ class ActiveWindowOCRText:
             logger.exception(f"[OCRText] ONNX Runtime backend failed to load: {e}")
             raise RuntimeError("All RapidOCR backends failed to initialize.")
 
-    def _send_ocr_result(self, json_output):
+    def _send_ocr_result(self, json_output, index):
         """Send OCR results to server with error handling."""
         try:
             payload = {
-                'screenshot_id': self.screenshot_id,
+                'event_id': self.event_id[index],
                 'ocr_text': json.dumps(json_output)
             }
-            response = requests.post(self.server_url, json=payload)
+            response = requests.post(self.server_url+'/ocr_event_extraction', json=payload)
             response.raise_for_status()
         except requests.exceptions.RequestException as req_e:
             logger.error(f"Error during API request: {req_e}")
@@ -168,118 +167,56 @@ class ActiveWindowOCRText:
 
     def run_ocr(self, min_conf=0.9, save_box_info=False, save_conf_info=False):
 
-        t_init = time.perf_counter()
+        logger.debug(len(self.event_id))
+        for i in range(len(self.event_id)):
 
-        img = cv2.imread(self.image_path, cv2.IMREAD_COLOR)
-        if img is None:
-            raise ValueError("Failed to load image")
+            t_init = time.perf_counter()
 
-        reader = self.get_cached_reader()
+            img = cv2.imread(self.image_path[i], cv2.IMREAD_COLOR)
+            if img is None:
+                raise ValueError("Failed to load image")
 
-        try:
-            output = reader(img)
-        except Exception:
-            raise
+            reader = self.get_cached_reader()
 
-        if not output:
-            logger.info("[OCRText] No text detected")
-            json_output = {"data": [{"text": "No text detected"}]} 
-            self._send_ocr_result(json_output)        
-        else:
+            try:
+                output = reader(img)
+            except Exception:
+                raise
 
-            t_ocr_total = time.perf_counter() - t_init
-            logger.info(f"[OCRText] run_ocr time: {t_ocr_total:.2f}s")
-            #logger.info(f"[TIMING] ocr_execution: {time.perf_counter() - _t_ocr_mode:.3f}s")
+            if not output:
+                logger.info("[OCRText] No text detected")
+                json_output = {"data": [{"text": "No text detected"}]} 
+                self._send_ocr_result(json_output, i)        
+            else:
 
-            json_output = {
-                "data": []
-            }
+                t_ocr_total = time.perf_counter() - t_init
+                logger.info(f"[OCRText] run_ocr time: {t_ocr_total:.2f}s")
+                #logger.info(f"[TIMING] ocr_execution: {time.perf_counter() - _t_ocr_mode:.3f}s")
 
-            for box, text, conf in zip(output.boxes, output.txts, output.scores):               
-                if conf < min_conf:
-                    continue
-                json_data = {"text": text}
-                # if save_conf_info:
-                #     json_data["confidence"] = float(conf)
-                # if save_box_info:
-                #     json_data["box"] = [[float(p[0]), float(p[1])] for p in box]
-                json_output['data'].append(json_data)
+                json_output = {
+                    "data": []
+                }
 
-
-            # with open('data.json', 'w', encoding='utf-8') as f:
-            #     json.dump(json_output, f, ensure_ascii=False)
-
-            self._send_ocr_result(json_output)
+                for box, text, conf in zip(output.boxes, output.txts, output.scores):               
+                    if conf < min_conf:
+                        continue
+                    json_data = {"text": text}
+                    # if save_conf_info:
+                    #     json_data["confidence"] = float(conf)
+                    # if save_box_info:
+                    #     json_data["box"] = [[float(p[0]), float(p[1])] for p in box]
+                    json_output['data'].append(json_data)
 
 
-    def get_image_path_and_event_id(self):
-            screenshot_folder_user = EVENT_SCREENSHOT_FOLDER_USER.format(user_id=self.user_id)
-            filename_list = glob(os.path.join(screenshot_folder_user, "*.png"))
-    
-            filtered_files = [f for f in filename_list if not f.endswith("_ocr.png")]
-    
-            filename_list_tmp = sorted(filtered_files, reverse=False)            
-          
-            if not os.path.isdir(EVENT_SCREENSHOT_FOLDER):
-                os.makedirs(EVENT_SCREENSHOT_FOLDER)
-             
-    
-            screenshot_path = self._move_image_file(filename_list_tmp[-1])         
+                # with open('data.json', 'w', encoding='utf-8') as f:
+                #     json.dump(json_output, f, ensure_ascii=False)
 
-            for tmp_file_data in filename_list:
-                os.remove(tmp_file_data)              
-           
-
-    def _move_image_file(self, tmp_file):
-            # logger.info(f"tmp_file => {tmp_file}")
-            full_screen_img = Path(tmp_file).name
-            tmp_ocr, ocr_ext = os.path.splitext(full_screen_img)
-            ocr_img = tmp_ocr + "_ocr.png"
-            screenshot_path = os.path.join(EVENT_SCREENSHOT_FOLDER, full_screen_img)
-            screenshot_ocr_path = os.path.join(EVENT_SCREENSHOT_FOLDER, ocr_img)
-            
-            tmp_ocr_full_path, ocr_tmp_ext = os.path.splitext(tmp_file)
-            ocr_tmp_file = tmp_ocr_full_path + "_ocr.png"
-    
-            shutil.copy2(tmp_file, screenshot_path)
-            shutil.copy2(ocr_tmp_file, screenshot_ocr_path)
-    
-            crop_black_background(screenshot_path, screenshot_path)
-    
-            if os.path.getsize(screenshot_path) > 1024 * 1024:
-                file_size = self.get_readable_file_size(screenshot_path)
-                logger.info(f"File size => {file_size}")
-                self._aggressive_compress_png(screenshot_path, screenshot_path)
-    
-            return screenshot_path
-
-    def _aggressive_compress_png(self, input_path, output_path):                   
-                
-            with Image.open(input_path) as img:
-                # 1. Convert to RGB if necessary
-                if img.mode != "RGB":
-                    img = img.convert("RGB")
-                    
-                # 2. Resize the image (PNGs at 4K or 1080p are rarely under 500kb)
-                # We will scale it down to a max width of 1280px to save space
-                width, height = img.size
-                if width > 1280:
-                    ratio = 1280 / width
-                    new_size = (1280, int(height * ratio))
-                    img = img.resize(new_size, Image.Resampling.LANCZOS)
-                    print(f"Resized to {new_size[0]}x{new_size[1]}")
-    
-                # 3. Apply Quantization (The most important step for PNG size)
-                # We reduce the image to a 256-color palette         
-                img = img.convert("P", palette=Image.ADAPTIVE, colors=256)
-    
-                os.remove(input_path)
-                
-                # 4. Save with optimization
-                img.save(output_path, "PNG", optimize=True)
+                self._send_ocr_result(json_output, i)
 
 # if __name__ == "__main__":
-#     ocr = ActiveWindowOCRText(warmup=True)
-#     ocr.run_ocr(
-#     img_path="/Users/armatura/Desktop/activitywatch/sd-ocr-event/scripts/test.png"
-# )
+#     ocr = ActiveWindowOCRText(
+#         server_url="",
+#         event_id="955" "964",
+#         image_path="" "",
+#         warmup=True)
+#     ocr.run_ocr()

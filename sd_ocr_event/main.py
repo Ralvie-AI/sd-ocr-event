@@ -10,8 +10,8 @@ def main():
 
     parser = argparse.ArgumentParser(description="Imate to Text")
     parser.add_argument("--server_url", required=True, help="URL to update ocr text")
-    parser.add_argument("--image_path", required=True, help="User ID for identification")
-    parser.add_argument("--event_id", type=int, default=0, help="Event ID")
+    parser.add_argument("--image_path", nargs="+", required=True, help="Images for ocr")
+    parser.add_argument("--event_id", type=int, nargs="+", default=[0], help="Event IDs")
 
     args = parser.parse_args()
 
