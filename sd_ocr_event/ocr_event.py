@@ -347,6 +347,52 @@ class ActiveEventWindowOCRText:
         #         logger.error("Failed to remove %s : %s", filename, e)
         
 
+    def run_ocr_test(self, min_conf=0.9, save_box_info=False, save_conf_info=False):
+    
+            # Main OCR execution function
+            t_init = time.perf_counter()
+    
+            img = cv2.imread(self.image_path, cv2.IMREAD_COLOR)
+            if img is None:
+                raise ValueError("Failed to load image")
+    
+            reader = self.get_cached_reader() # get RapidOCR reader
+            output = None
+            try:
+                output = reader(img)            
+            except Exception:
+                logger.exception("[OCRText] reader(img) failed during fullscreen_ocr")
+                raise
+    
+            if not output:
+                logger.info("[OCRText] No text detected")
+                json_output = {"data": [{"text": "No text detected"}]} 
+                self._send_ocr_result(json_output)        
+            else:
+    
+                t_ocr_total = time.perf_counter() - t_init
+                logger.info(f"[OCRText] run_ocr time: {t_ocr_total:.2f}s")
+    
+                json_output = {
+                    "data": []
+                }
+    
+                for box, text, conf in zip(output.boxes, output.txts, output.scores):               
+                    if conf < min_conf:
+                        continue
+                    json_data = {"text": text}
+                    # if save_conf_info:
+                    #     json_data["confidence"] = float(conf)
+                    # if save_box_info:
+                    #     json_data["box"] = [[float(p[0]), float(p[1])] for p in box]
+                    json_output['data'].append(json_data)
+    
+    
+                # with open('data.json', 'w', encoding='utf-8') as f:
+                #     json.dump(json_output, f, ensure_ascii=False)
+    
+                
+
     def create_event_ocr(self):
         screenshot_folder_user = EVENT_SCREENSHOT_FOLDER_USER.format(user_id=self.user_id)
         filename_list = glob(os.path.join(screenshot_folder_user, "*.png"))
