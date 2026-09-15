@@ -186,6 +186,15 @@ def get_image_name_to_utc_dt(filename: str) -> datetime:
             ts_part,
             "%Y-%m-%dT%H-%M-%S.%fZ"
         ).replace(tzinfo=timezone.utc)
+    
+def _is_screenshot_at_event_end_time(image_time_list: list, end_time: datetime) -> bool:
+
+    get_last_screenshot = get_image_name_to_utc_dt(image_time_list[-1]).time().replace(microsecond=0)
+    end_time = end_time.time().replace(microsecond=0)
+
+    logger.debug(f'last screenshot: {get_last_screenshot}')
+    logger.debug(f'end_time: {end_time}')
+    return True if get_last_screenshot == end_time else False
 
 def get_image(start_time: datetime, end_time: datetime, user_id: str, event_id: int):
 
@@ -213,7 +222,19 @@ def get_image(start_time: datetime, end_time: datetime, user_id: str, event_id: 
             )
             logger.debug(f'[image_time_list: {len(image_time_list)}] - {image_time_list}')
             if image_time_list:
-                screenshot_path = _move_image_file(image_time_list[-1])
+                if len(image_time_list) > 1:
+                    # Check if the screenshot was captured at the same time as the event switch.
+                        # The screenshot may not match the event.
+                    if _is_screenshot_at_event_end_time(image_time_list, end_time):
+                        # if _is_screenshot_at_event_end_time is True => we can use last image
+                        logger.debug('screenshot time == event switch time')
+                        screenshot_path = _move_image_file(image_time_list[-2])
+                    else:
+                        # if _is_screenshot_at_event_end_time is False => we need to use second last image
+                        logger.debug('screenshot time != event switch time')
+                        screenshot_path = _move_image_file(image_time_list[-1])
+                else:
+                    screenshot_path = _move_image_file(image_time_list[-1])
                 screenshot_time = get_image_name_to_utc_dt(screenshot_path)
                 logger.debug(f'[SCREENSHOT_PATH]: {screenshot_path}')
                 logger.debug(f'[SCREENSHOT_TIME]: {screenshot_time}')
@@ -297,3 +318,12 @@ def _aggressive_compress_png(input_path, output_path):
                 
             # 4. Save with optimization
             img.save(output_path, "PNG", optimize=True)
+
+      
+# if __name__ == "__main__":
+
+#     time_format = "%Y-%m-%d %H:%M:%S.%f%z"
+#     start_time = datetime.strptime("2026-09-15 08:01:32.809996+00:00", time_format)
+#     end_time = datetime.strptime("2026-09-15 08:03:32.900000+00:00", time_format)
+
+#     get_image(start_time=start_time, end_time=end_time, user_id='eventID_1394', event_id=1394)
