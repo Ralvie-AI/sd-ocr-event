@@ -189,7 +189,6 @@ def get_image_name_to_utc_dt(filename: str) -> datetime:
 
 def get_image(start_time: datetime, end_time: datetime, user_id: str, event_id: int):
 
-    setup_logging("sd-ocr-event", log_file=True)
     screenshot_folder_user = EVENT_SCREENSHOT_FOLDER_USER.format(user_id=user_id)
     filename_list = glob(os.path.join(screenshot_folder_user, "*.png"))
 
