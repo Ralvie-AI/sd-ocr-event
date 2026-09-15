@@ -20,7 +20,8 @@ from sd_ocr_event.const import EVENT_SCREENSHOT_FOLDER_USER, EVENT_SCREENSHOT_FO
 from pathlib import Path
 from glob import glob
 import shutil
-
+from sd_core.const import STAGING
+from sd_core.log import setup_logging
 
 # Constants for DWM to get the real window size (minus shadows)
 DWMWA_EXTENDED_FRAME_BOUNDS = 9
@@ -57,30 +58,6 @@ def ensure_path_exists(path: str) -> None:
     # Create a directory if it doesn t exist.
     if not os.path.exists(path):
         os.makedirs(path)
-
-
-def _ensure_returned_path_exists(f: GetDirFunc) -> GetDirFunc:
-    """
-     Decorator to ensure returned path exists. This is useful for functions that need to be wrapped in a get_dir function.
-
-     @param f - function that takes a subpath and returns a path
-
-     @return wrapped function that returns the path that was passed to the function and ensures it exists in the path_
-    """
-    @wraps(f)
-    def wrapper(subpath: Optional[str] = None) -> str:
-        """
-         Wrapper for : func : ` waflib. Tools. check_path ` that ensures the path exists.
-
-         @param subpath - Path to check for existence. If None path is assumed to be a directory.
-
-         @return Path to the file or directory that was checked for existence. This is a convenience function that wraps the function
-        """
-        path = f(subpath)
-        ensure_path_exists(path)
-        return path
-
-    return wrapper
 
 
 # filename: "0a07029c9a901fe0819abf69dca12c0d_2026-01-14T00-55-52.905552Z.png"
@@ -140,134 +117,6 @@ def stop_process_by_exe(exe_name, time_sleep_time=0.2):
     subprocess.run(f"taskkill /F /IM {exe_name}", shell=True)
     time_sleep(time_sleep_time)  # wait 200ms for process cleanup
 
-def setup_logging(
-    name: str,
-    testing=False,
-    verbose=False,
-    log_stderr=True,
-    log_file=False,
-):  # pragma: no cover
-    """
-     Setup logging for SD components. This is a wrapper around : func : ` logging. getLogger ` to allow us to set up a logging handler for each SD component.
-     
-     @param name - The name of the logger. Used for logging messages to the console
-     @param testing - Whether or not we are testing
-     @param verbose - Whether or not to log to stderr ( debug )
-     @param log_stderr - Whether or not to log to stderr
-     @param log_file - Whether or not to log to file (
-    """
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.DEBUG if verbose else logging.INFO)
-    root_logger.handlers = []
-
-    # run with LOG_LEVEL=DEBUG to customize log level across all SD components
-    log_level = os.environ.get("LOG_LEVEL")
-    # Set the logging level to the current logging level.
-    if log_level:
-        # Set the logging level as specified in env var
-        if hasattr(logging, log_level.upper()):
-            root_logger.setLevel(getattr(logging, log_level.upper()))
-        else:
-            root_logger.warning(
-                f"No logging level called {log_level} (as specified in env var)"
-            )
-
-    # Add a handler for stderr output.
-    if log_stderr:
-        root_logger.addHandler(_create_stderr_handler())
-    # Add a handler for the file handler.
-    if log_file:
-        root_logger.addHandler(_create_file_handler(name, testing=testing))
-
-    def excepthook(type_, value, traceback):
-        """
-         Catch exceptions and log them to root_logger. This is a wrapper around sys. excepthook which logs the exception if log_stderr is set to False.
-         
-         @param type_ - The type of exception raised. Should be one of : exc : ` sys. exc_info `
-         @param value - The value of the exception
-         @param traceback
-        """
-        root_logger.exception("Unhandled exception", exc_info=(type_, value, traceback))
-        # call the default excepthook if log_stderr isn't true
-        # (otherwise it'll just get duplicated)
-        # If log_stderr is set to true then sys. excepthook__ type_ value traceback is logged and the traceback is not logged.
-        if not log_stderr:
-            sys.__excepthook__(type_, value, traceback)
-
-    sys.excepthook = excepthook
-
-
-def _create_file_handler(
-    name, testing=False, log_json=False
-) -> logging.Handler:
-    log_dir = get_log_dir(name)
-
-    global log_file_path
-
-    file_ext = ".log.json" if log_json else ".log"
-
-    # Daily log file instead of per-run timestamp
-    date_str = datetime.now().strftime("%Y-%m-%d")
-    log_name = f"{name}_{'testing_' if testing else ''}{date_str}{file_ext}"
-
-    log_file_path = os.path.join(log_dir, log_name)
-
-    # Append mode + rotation
-    fh = RotatingFileHandler(
-        log_file_path,
-        mode="a",
-        maxBytes=10 * 1024 * 1024,
-        backupCount=3,
-    )
-
-    fh.setFormatter(_create_human_formatter())
-
-    return fh
-
-def _create_stderr_handler() -> logging.Handler:  # pragma: no cover
-    """
-     Create a handler that writes to stderr. This is useful for debugging and to ensure that stderr is printed to the console in a human readable format.
-     
-     
-     @return A logging. Handler to use for outputting to stderr ( or logging. StreamHandler ). Note that the handler does not have a formatter
-    """
-    stderr_handler = logging.StreamHandler(stream=sys.stderr)
-    stderr_handler.setFormatter(_create_human_formatter())
-
-    return stderr_handler
-
-def _create_human_formatter() -> logging.Formatter:  # pragma: no cover
-    """
-     Create a formatter that prints to the console. This is useful for debugging the log messages that don't fit into the console.
-     
-     
-     @return A : class : ` logging. Formatter ` with the same format as the one returned by : func : ` asctime `
-    """
-    return logging.Formatter(
-        "%(asctime)s [%(levelname)-5s]: %(message)s  (%(name)s:%(lineno)s)",
-        "%Y-%m-%d %H:%M:%S",
-    )
-
-
-@_ensure_returned_path_exists
-def get_log_dir(module_name: Optional[str] = None) -> str:  # pragma: no cover
-    """
-     Get the path to Sundial's log directory. If module_name is specified it will be appended to the log directory to form a fully qualified path
-
-     @param module_name - name of module to append to the log directory
-
-     @return full path to log directory or None if not found ( in which case we're in an untrusted
-    """
-    # on Linux/Unix, platformdirs changed to using XDG_STATE_HOME instead of XDG_DATA_HOME for log_dir in v2.6
-    # we want to keep using XDG_DATA_HOME for backwards compatibility
-    # https://github.com/Sundial/sd-core/pull/122#issuecomment-1768020335
-    # Return the path to the log directory for the current user s log files.
-    if sys.platform.startswith("linux"):
-        log_dir = platformdirs.user_cache_path("Sundial") / "log"
-    else:
-        log_dir = platformdirs.user_log_dir("Sundial")
-    return os.path.join(log_dir, module_name) if module_name else log_dir
-
 
 # ─────────────────────────────────────────────
 #  Black-background crop
@@ -288,10 +137,10 @@ def crop_black_background(
     black_ratio = black_pixels / gray.size
 
     if black_ratio <= BLACK_RATIO_THRESHOLD:
-        logger.info("No significant black background — skipping crop.")
+        logger.debug("No significant black background — skipping crop.")
         return
 
-    logger.info(f"Black background detected ({black_ratio:.1%}) — cropping.")
+    logger.debug(f"Black background detected ({black_ratio:.1%}) — cropping.")
 
     mask = gray > threshold
     coords = np.argwhere(mask)
@@ -307,7 +156,7 @@ def crop_black_background(
 
     if output_path:
         result.save(output_path)
-        logger.info(f"Cropped image saved: {output_path}")
+        logger.debug(f"Cropped image saved: {output_path}")
         if os.path.exists(image_path):
             os.remove(image_path)
 
@@ -338,37 +187,55 @@ def get_image_name_to_utc_dt(filename: str) -> datetime:
             "%Y-%m-%dT%H-%M-%S.%fZ"
         ).replace(tzinfo=timezone.utc)
 
-def get_image(start_time: datetime, end_time: datetime, user_id: str):
+def get_image(start_time: datetime, end_time: datetime, user_id: str, event_id: int):
 
+    setup_logging("sd-ocr-event", log_file=True)
     screenshot_folder_user = EVENT_SCREENSHOT_FOLDER_USER.format(user_id=user_id)
     filename_list = glob(os.path.join(screenshot_folder_user, "*.png"))
 
+    if STAGING == 1:
+        path_for_debug = Path(EVENT_SCREENSHOT_FOLDER) / 'DEBUG' / f'eventID_{event_id}'
+        path_for_debug.mkdir(parents=True, exist_ok=True)
+
+        for file in filename_list:
+            if file.endswith('_active.png'):
+                file_name = Path(file).name
+                shutil.copy(file, os.path.join(path_for_debug, f'{file_name}'))
+
+    logger.debug(f'total filename_list => {len(filename_list)}')
     if filename_list:
         try: 
             filtered_files = [f for f in filename_list if not f.endswith("_active.png")]
+            logger.debug(f'[filename_list: {len(filtered_files)}] - {filtered_files}')
             image_time_list = sorted(
                     image_time
                     for image_time in filtered_files
                     if start_time <= get_image_name_to_utc_dt(image_time) <= end_time
             )
-
+            logger.debug(f'[image_time_list: {len(image_time_list)}] - {image_time_list}')
             if image_time_list:
                 screenshot_path = _move_image_file(image_time_list[-1])
                 screenshot_time = get_image_name_to_utc_dt(screenshot_path)
-                logger.info(f'[SCREENSHOT_PATH]: {screenshot_path}')
-                logger.info(f'[SCREENSHOT_TIME]: {screenshot_time}')
+                logger.debug(f'[SCREENSHOT_PATH]: {screenshot_path}')
+                logger.debug(f'[SCREENSHOT_TIME]: {screenshot_time}')
 
                 for tmp_file_data in filename_list:
                     os.remove(tmp_file_data)  
 
                 return screenshot_path, screenshot_time
             else:
+                for tmp_file_data in filename_list:
+                    os.remove(tmp_file_data)  
+                logger.debug(f'image_time_list NOT FOUND')
                 return None, None
             
         except Exception as e:
-            logger.info(f"[OCRText] {e}")
+            for tmp_file_data in filename_list:
+                os.remove(tmp_file_data) 
+            logger.debug(f"[OCRText] {e}")
             raise RuntimeError(e)
     else:
+        logger.debug(f'filename_list NOT FOUND')
         return None, None
 
 def _get_readable_file_size(file_path):
@@ -389,9 +256,14 @@ def _move_image_file(tmp_file):
             
         tmp_ocr_full_path, ocr_tmp_ext = os.path.splitext(tmp_file)
         ocr_tmp_file = tmp_ocr_full_path + "_active.png"
-    
+
+        try:
         #shutil.copy2(tmp_file, screenshot_path)
-        shutil.copy2(ocr_tmp_file, screenshot_ocr_path)
+            shutil.copy2(ocr_tmp_file, screenshot_ocr_path)
+        except Exception as e:
+            logger.debug(f'ocr_tmp_file => {ocr_tmp_file}')
+            logger.debug(f'screenshot_ocr_path => {screenshot_ocr_path}')
+            logger.exception(e)
     
         #crop_black_background(screenshot_path, screenshot_path)
     

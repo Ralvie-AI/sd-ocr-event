@@ -1,7 +1,7 @@
 import argparse
 import logging 
 
-from sd_ocr_event.utils import setup_logging
+from sd_core.log import setup_logging
 from sd_ocr_event.ocr_event import ActiveWindowOCRText
 
 logger = logging.getLogger(__name__)
