@@ -9,7 +9,7 @@ import importlib.util
 import urllib3
 from glob import glob
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import numpy as np
 import cv2
@@ -27,13 +27,18 @@ os.environ.pop('HTTPS_PROXY', None)
 logger = logging.getLogger(__name__)
 
 class ActiveEventWindowOCRText:
-    def __init__(self, server_url, event_id, user_id, image_path, warmup=False) -> None:
+    def __init__(self, server_url, user_id, image_path,
+                 event_id, timestamp, duration,
+                 warmup=False) -> None:
         super().__init__()
         self._reader_cache = None
-        self.server_url = server_url if server_url != None else "http://localhost:7600/screenshot/event/screenshots"
-        self.event_id = event_id
-        self.user_id = user_id
+        self.server_url = "http://localhost:7600/screenshot/event/screenshots"        
+        self.user_id = user_id        
         self.image_path = image_path
+        self.event_id = event_id
+        self.timestamp = timestamp
+        self.duration = float(duration) if duration != "" else ""
+        self.screenshot_id = 0
         self.image_org = ""
 
         if warmup:
@@ -339,12 +344,12 @@ class ActiveEventWindowOCRText:
 
             self._send_ocr_result(json_output)
 
-        # filenames = [self.image_org, self.image_path]
-        # for filename in filenames:                
-        #     try:
-        #         os.remove(filename)
-        #     except OSError as e:
-        #         logger.error("Failed to remove %s : %s", filename, e)
+        filenames = [self.image_org, self.image_path]
+        for filename in filenames:                
+            try:
+                os.remove(filename)
+            except OSError as e:
+                logger.error("Failed to remove %s : %s", filename, e)
         
 
     def run_ocr_test(self, min_conf=0.9, save_box_info=False, save_conf_info=False):
@@ -391,23 +396,54 @@ class ActiveEventWindowOCRText:
                 # with open('data.json', 'w', encoding='utf-8') as f:
                 #     json.dump(json_output, f, ensure_ascii=False)
     
-                
+    def get_files_in_range(self, directory, start_time, duration):
+        start_time = datetime.fromisoformat(start_time)
+        end_time = start_time + timedelta(seconds=duration)
+
+        result = []
+
+        for file_path in Path(directory).glob("*.png"):
+            match = re.search(
+                r"_(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d+Z)\.png$",
+                file_path.name,
+            )
+
+            if not match:
+                continue
+
+            timestamp = match.group(1)
+
+            # Convert:
+            # 2026-09-11T07-52-56.935429Z
+            # to:
+            # 2026-09-11T07:52:56.935429+00:00
+            timestamp = timestamp.replace("Z", "+00:00")
+            timestamp = re.sub(
+                r"T(\d{2})-(\d{2})-(\d{2})",
+                r"T\1:\2:\3",
+                timestamp,
+            )
+
+            file_time = datetime.fromisoformat(timestamp)
+
+            if start_time <= file_time <= end_time:
+                result.append(str(file_path))
+
+        return result
 
     def create_event_ocr(self):
         screenshot_folder_user = EVENT_SCREENSHOT_FOLDER_USER.format(user_id=self.user_id)
-        filename_list = glob(os.path.join(screenshot_folder_user, "*.png"))
+        filename_list = self.get_files_in_range(screenshot_folder_user, self.timestamp, self.duration)        
 
-        filtered_files = [f for f in filename_list if not f.endswith("_ocr.png")]
-
-        filename_list_tmp = sorted(filtered_files, reverse=False)            
+        filtered_files = [f for f in filename_list if not f.endswith("_ocr.png")]               
         
         if not os.path.isdir(EVENT_SCREENSHOT_FOLDER):
             os.makedirs(EVENT_SCREENSHOT_FOLDER)
 
-        logger.info(f"filename_list_tmp => {filename_list_tmp}")
-        if len(filename_list_tmp) > 0:
+        logger.info(f"filtered_files => {filtered_files}")
+        if len(filtered_files) > 0:
             
-            screenshot_path, screenshot_ocr_path = self.move_image_file(filename_list_tmp[-1])
+            screenshot_path, screenshot_ocr_path = self.move_image_file(filtered_files[-1])
 
             for tmp_file_data in filename_list:
                 os.remove(tmp_file_data)
@@ -424,7 +460,7 @@ class ActiveEventWindowOCRText:
                     'is_event_screenshot': True
                 }
                 logger.info(f"payload => {payload}")
-
+                logger.info(f"server url => {self.server_url}")
                 response = requests.post(self.server_url, json=payload)
                 response.raise_for_status() # Raise an exception for bad status codes
 
@@ -491,9 +527,13 @@ class ActiveEventWindowOCRText:
 
 if __name__ == "__main__":
     server_url = ""
-    screenshot_id = ""
+    user_id = "840c895a938ec8cc9f455b89eba91465"
     image_path = "no-text.png"
-    ActiveEventWindowOCRText(server_url, screenshot_id, image_path, warmup=True).run_ocr()
+
+    # ba91465_2026-09-15T07-46-54.255866Z_ocr.png
+    # ActiveEventWindowOCRText(server_url, screenshot_id, image_path, warmup=True).run_ocr()
+    t = ActiveEventWindowOCRText(server_url, user_id, image_path, warmup=True)
+    t.create_event_ocr("2026-09-15 07:50:08.702000+00:00", 81.758)
     # ocr = ActiveWindowOCRText(server_url, screenshot_id, warmup=True)
     # # ocr.run_ocr(img_path=r"C:\Users\User\Pictures\ss_test.PNG")    
     # result = ocr.run_ocr(img_path=r"ch.png")    
