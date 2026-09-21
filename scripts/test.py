@@ -46,6 +46,7 @@ if __name__ == "__main__":
     cor_event = ActiveEventWindowOCRText(
         server_url="", 
         user_id="", 
+        company_id="", 
         image_path=img_file,
         event_id="",
         timestamp="",

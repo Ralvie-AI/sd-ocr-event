@@ -17,7 +17,7 @@ import pyopencl as cl
 import requests
 from PIL import Image
 
-from sd_ocr_event.const import EVENT_SCREENSHOT_FOLDER_USER, EVENT_SCREENSHOT_FOLDER
+from sd_ocr_event.const import EVENT_SCREENSHOT_FOLDER_USER_COMPANY, EVENT_SCREENSHOT_FOLDER
 from sd_ocr_event.utils import crop_black_background
 
 os.environ.pop('HTTP_PROXY', None)
@@ -27,13 +27,14 @@ os.environ.pop('HTTPS_PROXY', None)
 logger = logging.getLogger(__name__)
 
 class ActiveEventWindowOCRText:
-    def __init__(self, server_url, user_id, image_path,
+    def __init__(self, server_url, user_id, company_id, image_path,
                  event_id, timestamp, duration,
                  warmup=False) -> None:
         super().__init__()
         self._reader_cache = None
         self.server_url = "http://localhost:7600/screenshot/event/screenshots"        
-        self.user_id = user_id        
+        self.user_id = user_id
+        self.company_id = company_id
         self.image_path = image_path
         self.event_id = event_id
         self.timestamp = timestamp
@@ -432,7 +433,7 @@ class ActiveEventWindowOCRText:
         return result
 
     def create_event_ocr(self):
-        screenshot_folder_user = EVENT_SCREENSHOT_FOLDER_USER.format(user_id=self.user_id)
+        screenshot_folder_user = EVENT_SCREENSHOT_FOLDER_USER_COMPANY.format(user_id=self.user_id, company_id=self.company_id)
         filename_list = self.get_files_in_range(screenshot_folder_user, self.timestamp, self.duration)        
 
         filtered_files = [f for f in filename_list if not f.endswith("_ocr.png")]               
