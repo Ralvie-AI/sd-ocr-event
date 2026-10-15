@@ -1,3 +1,5 @@
+.PHONY: build package clean
+
 build:
 	poetry install 
 
